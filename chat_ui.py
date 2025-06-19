@@ -2,7 +2,7 @@
 import socket
 import threading
 import tkinter as tk
-from tkinter import simpledialog, messagebox, ttk
+from tkinter import simpledialog, messagebox, ttk, filedialog
 import json
 import os
 from cryptography.fernet import Fernet
@@ -34,44 +34,50 @@ class ChatApp:
         self.root = root
         self.root.title("AncronSecure Chat")
         self.root.configure(bg="#1e1e1e")
+        self.root.state('zoomed')
         self.sock = None
 
         style = ttk.Style()
         style.theme_use("default")
         style.configure("TButton", padding=6, relief="flat", background="#3a3f44", foreground="white")
 
-        self.frame = tk.Frame(root, bg="#1e1e1e")
-        self.frame.pack(padx=10, pady=10)
+        self.main_frame = tk.Frame(root, bg="#1e1e1e")
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
 
-        self.text_widget = tk.Text(self.frame, bg="#2d2d2d", fg="white", state='disabled', height=20, width=50)
-        self.text_widget.pack(pady=(0, 10))
+        self.sidebar = tk.Frame(self.main_frame, bg="#2a2a2a", width=200)
+        self.sidebar.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.entry = tk.Entry(self.frame, bg="#3a3f44", fg="white")
-        self.entry.pack(fill=tk.X)
+        self.chat_area = tk.Frame(self.main_frame, bg="#1e1e1e")
+        self.chat_area.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True)
+
+        self.connection_buttons = []
+        self.connections = load_connections()
+        for name in self.connections:
+            btn = ttk.Button(self.sidebar, text=name, command=lambda n=name: self.switch_to_connection(n))
+            btn.pack(fill=tk.X, pady=2, padx=5)
+            self.connection_buttons.append(btn)
+
+        self.text_widget = tk.Text(self.chat_area, bg="#2d2d2d", fg="white", state='disabled', height=20)
+        self.text_widget.pack(pady=(10, 10), fill=tk.BOTH, expand=True)
+
+        self.entry = tk.Entry(self.chat_area, bg="#3a3f44", fg="white")
+        self.entry.pack(fill=tk.X, padx=10)
         self.entry.bind("<Return>", self.send_message)
 
-        self.button_frame = tk.Frame(self.frame, bg="#1e1e1e")
+        self.button_frame = tk.Frame(self.chat_area, bg="#1e1e1e")
         self.button_frame.pack(pady=(10, 0))
 
         ttk.Button(self.button_frame, text="Server starten", command=self.start_server).pack(side=tk.LEFT, padx=5)
         ttk.Button(self.button_frame, text="Mit Server verbinden", command=self.connect_to_server).pack(side=tk.LEFT, padx=5)
         ttk.Button(self.button_frame, text="🔒 Secure All", command=self.secure_delete).pack(side=tk.LEFT, padx=5)
+        ttk.Button(self.button_frame, text="📁 Bild senden (bis 4K)", command=self.send_image).pack(side=tk.LEFT, padx=5)
 
-        self.dropdown_frame = tk.Frame(self.frame, bg="#1e1e1e")
-        self.dropdown_frame.pack(pady=(10, 0))
-
-        self.connections = load_connections()
-        self.selected_conn = tk.StringVar()
-        self.dropdown = ttk.Combobox(self.dropdown_frame, textvariable=self.selected_conn, values=list(self.connections.keys()), state='readonly')
-        self.dropdown.pack(side=tk.LEFT)
-        ttk.Button(self.dropdown_frame, text="Verbinden", command=self.connect_saved).pack(side=tk.LEFT, padx=5)
-
-        self.version_label = tk.Label(self.frame, text=VERSION, bg="#1e1e1e", fg="#888888")
+        self.version_label = tk.Label(self.chat_area, text=f"Ancron4K System - {VERSION}", bg="#1e1e1e", fg="#888888")
         self.version_label.pack(anchor='se', padx=5, pady=(20, 0))
 
         self.append_message("Willkommen bei AncronSecure Chat \U0001F512", "System")
 
-    def append_message(self, message, sender=""):  
+    def append_message(self, message, sender=""):
         self.text_widget.config(state='normal')
         tag = "user" if sender else None
         self.text_widget.insert(tk.END, f"{sender}: {message}\n" if sender else f"{message}\n", tag)
@@ -99,10 +105,7 @@ class ChatApp:
             save_connection(name, ip)
         self._connect(ip)
 
-    def connect_saved(self):
-        name = self.selected_conn.get()
-        if not name:
-            return
+    def switch_to_connection(self, name):
         ip = self.connections.get(name)
         if ip and messagebox.askyesno("Sicher?", f"Verbindest du dich mit {ip}?\n\n⚠️ Dies kann ein Phishing-Risiko darstellen."):
             self._connect(ip)
@@ -124,10 +127,24 @@ class ChatApp:
             self.append_message(msg, "Du")
             self.entry.delete(0, tk.END)
 
+    def send_image(self):
+        if not self.sock:
+            return
+        path = filedialog.askopenfilename(filetypes=[("Image Files", "*.png;*.jpg;*.jpeg")])
+        if path:
+            try:
+                with open(path, 'rb') as f:
+                    data = f.read()
+                label = f"[Bild gesendet: {os.path.basename(path)} ({len(data)//1024} KB)]"
+                self.sock.send(cipher.encrypt(label.encode()))
+                self.append_message(label, "Du")
+            except Exception as e:
+                messagebox.showerror("Fehler", f"Bild konnte nicht gesendet werden: {e}")
+
     def receive_messages(self):
         while True:
             try:
-                data = self.sock.recv(1024)
+                data = self.sock.recv(4096)
                 if not data:
                     break
                 decrypted = cipher.decrypt(data).decode()
