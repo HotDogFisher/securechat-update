@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import simpledialog, messagebox, ttk, filedialog
 import json
 import os
+import platform
 from cryptography.fernet import Fernet
 
 # === Konfiguration ===
@@ -34,7 +35,16 @@ class ChatApp:
         self.root = root
         self.root.title("AncronSecure Chat")
         self.root.configure(bg="#1e1e1e")
-        self.root.state('zoomed')
+
+        # Plattformabhängiger Vollbild-Modus
+        if platform.system() == "Windows":
+            self.root.state('zoomed')
+        else:
+            try:
+                self.root.attributes('-zoomed', True)
+            except:
+                self.root.attributes('-fullscreen', True)
+
         self.sock = None
 
         style = ttk.Style()
