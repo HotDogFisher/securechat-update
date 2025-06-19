@@ -1,174 +1,159 @@
-import tkinter as tk
-from tkinter import scrolledtext, simpledialog, messagebox
+# chat_ui.py
 import socket
 import threading
-import time
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+import tkinter as tk
+from tkinter import simpledialog, messagebox, ttk
+import json
 import os
+from cryptography.fernet import Fernet
 
+# === Konfiguration ===
+KEY = Fernet.generate_key()  # Ersetze durch deinen festen Key bei Bedarf
+VERSION = "v1.3.0"
 PORT = 12345
-KEY = b'\x01'*32  # 32 Bytes Schlüssel (für Demo hardcoded, tausche das sicher aus!)
+connections_file = "connections.json"
+cipher = Fernet(KEY)
 
-class SecureChat(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title("Secure SecureChat")
-        self.geometry("500x420")
+# === Verbindung speichern/laden ===
+def load_connections():
+    if not os.path.exists(connections_file):
+        with open(connections_file, 'w') as f:
+            json.dump({}, f)
+    with open(connections_file, 'r') as f:
+        return json.load(f)
 
-        self.chat_log = scrolledtext.ScrolledText(self, state='disabled')
-        self.chat_log.pack(expand=True, fill='both', padx=10, pady=10)
+def save_connection(name, ip):
+    connections = load_connections()
+    connections[name] = ip
+    with open(connections_file, 'w') as f:
+        json.dump(connections, f)
 
-        self.status_label = tk.Label(self, text="Status: offline")
-        self.status_label.pack(padx=10)
+# === Chatfenster ===
+class ChatApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("AncronSecure Chat")
+        self.root.configure(bg="#1e1e1e")
+        self.sock = None
 
-        self.entry = tk.Entry(self)
-        self.entry.pack(fill='x', padx=10, pady=5)
-        self.entry.bind("<KeyPress>", self.notify_typing)
+        style = ttk.Style()
+        style.theme_use("default")
+        style.configure("TButton", padding=6, relief="flat", background="#3a3f44", foreground="white")
+
+        self.frame = tk.Frame(root, bg="#1e1e1e")
+        self.frame.pack(padx=10, pady=10)
+
+        self.text_widget = tk.Text(self.frame, bg="#2d2d2d", fg="white", state='disabled', height=20, width=50)
+        self.text_widget.pack(pady=(0, 10))
+
+        self.entry = tk.Entry(self.frame, bg="#3a3f44", fg="white")
+        self.entry.pack(fill=tk.X)
         self.entry.bind("<Return>", self.send_message)
 
-        send_btn = tk.Button(self, text="Senden", command=self.send_message)
-        send_btn.pack(padx=10, pady=5)
+        self.button_frame = tk.Frame(self.frame, bg="#1e1e1e")
+        self.button_frame.pack(pady=(10, 0))
 
-        frame = tk.Frame(self)
-        frame.pack(pady=5)
-        self.server_btn = tk.Button(frame, text="Server starten", command=self.start_server)
-        self.server_btn.pack(side='left', padx=5)
-        self.client_btn = tk.Button(frame, text="Mit Server verbinden", command=self.connect_to_server)
-        self.client_btn.pack(side='left', padx=5)
+        ttk.Button(self.button_frame, text="Server starten", command=self.start_server).pack(side=tk.LEFT, padx=5)
+        ttk.Button(self.button_frame, text="Mit Server verbinden", command=self.connect_to_server).pack(side=tk.LEFT, padx=5)
+        ttk.Button(self.button_frame, text="🔒 Secure All", command=self.secure_delete).pack(side=tk.LEFT, padx=5)
 
-        self.sock = None
-        self.conn = None
-        self.running = False
-        self.aesgcm = AESGCM(KEY)
-        self.last_typing = 0
-        self.typing_timeout = 2  # Sekunden
-        self.typing_active = False
+        self.dropdown_frame = tk.Frame(self.frame, bg="#1e1e1e")
+        self.dropdown_frame.pack(pady=(10, 0))
+
+        self.connections = load_connections()
+        self.selected_conn = tk.StringVar()
+        self.dropdown = ttk.Combobox(self.dropdown_frame, textvariable=self.selected_conn, values=list(self.connections.keys()), state='readonly')
+        self.dropdown.pack(side=tk.LEFT)
+        ttk.Button(self.dropdown_frame, text="Verbinden", command=self.connect_saved).pack(side=tk.LEFT, padx=5)
+
+        self.version_label = tk.Label(self.frame, text=VERSION, bg="#1e1e1e", fg="#888888")
+        self.version_label.pack(anchor='se', padx=5, pady=(20, 0))
+
+        self.append_message("Willkommen bei AncronSecure Chat \U0001F512", "System")
+
+    def append_message(self, message, sender=""):  
+        self.text_widget.config(state='normal')
+        tag = "user" if sender else None
+        self.text_widget.insert(tk.END, f"{sender}: {message}\n" if sender else f"{message}\n", tag)
+        self.text_widget.config(state='disabled')
+        self.text_widget.see(tk.END)
 
     def start_server(self):
-        if self.running:
-            messagebox.showinfo("Info", "Server läuft bereits!")
-            return
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.sock.bind(('', PORT))
-        self.sock.listen(1)
-        self.append_chat("Server läuft. Warte auf Verbindung...")
-        threading.Thread(target=self.accept_connection, daemon=True).start()
-        self.running = True
-        self.update_status("Warte auf Verbindung...")
+        server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server.bind(("", PORT))
+        server.listen(1)
+        self.append_message("[System] Warte auf Verbindung...")
 
-    def accept_connection(self):
-        try:
-            self.conn, addr = self.sock.accept()
-            self.append_chat(f"Verbindung von {addr} hergestellt!")
-            self.update_status("Verbunden")
-            self.send_encrypted(b"__STATUS__ONLINE__")
+        def handle_client():
+            conn, addr = server.accept()
+            self.sock = conn
+            self.append_message(f"[System] Verbunden mit {addr[0]}")
             threading.Thread(target=self.receive_messages, daemon=True).start()
-        except Exception as e:
-            self.append_chat(f"Fehler beim Akzeptieren: {e}")
-            self.update_status("Fehler")
+
+        threading.Thread(target=handle_client, daemon=True).start()
 
     def connect_to_server(self):
-        if self.running:
-            messagebox.showinfo("Info", "Bereits verbunden!")
+        ip = simpledialog.askstring("Verbinden", "Gib die IP-Adresse ein:")
+        name = simpledialog.askstring("Name speichern", "Speichere diese Verbindung unter welchem Namen?")
+        if name and ip:
+            save_connection(name, ip)
+        self._connect(ip)
+
+    def connect_saved(self):
+        name = self.selected_conn.get()
+        if not name:
             return
-        ip = simpledialog.askstring("IP-Adresse eingeben", "Gib die IP des Servers ein:")
-        if not ip:
-            return
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        ip = self.connections.get(name)
+        if ip and messagebox.askyesno("Sicher?", f"Verbindest du dich mit {ip}?\n\n⚠️ Dies kann ein Phishing-Risiko darstellen."):
+            self._connect(ip)
+
+    def _connect(self, ip):
         try:
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.connect((ip, PORT))
-            self.append_chat(f"Mit Server {ip} verbunden!")
-            self.running = True
-            self.update_status("Verbunden")
+            self.append_message(f"[System] Verbunden mit {ip}")
             threading.Thread(target=self.receive_messages, daemon=True).start()
-            self.send_encrypted(b"__STATUS__ONLINE__")
         except Exception as e:
             messagebox.showerror("Fehler", f"Verbindung fehlgeschlagen: {e}")
-            self.update_status("Fehler")
 
     def send_message(self, event=None):
-        msg = self.entry.get().strip()
-        if not msg or not self.running:
-            return
-        self.entry.delete(0, tk.END)
-        self.append_chat(f"Du: {msg}")
-        self.send_encrypted(msg.encode('utf-8'))
-        self.typing_active = False
-        self.send_encrypted(b"__STATUS__NOTYPING__")
-
-    def notify_typing(self, event=None):
-        if not self.running:
-            return
-        now = time.time()
-        if now - self.last_typing > self.typing_timeout:
-            self.send_encrypted(b"__STATUS__TYPING__")
-            self.typing_active = True
-        self.last_typing = now
-        self.after(int(self.typing_timeout * 1000), self.check_typing_timeout)
-
-    def check_typing_timeout(self):
-        if time.time() - self.last_typing > self.typing_timeout and self.typing_active:
-            self.send_encrypted(b"__STATUS__NOTYPING__")
-            self.typing_active = False
-
-    def send_encrypted(self, data: bytes):
-        nonce = os.urandom(12)
-        encrypted = self.aesgcm.encrypt(nonce, data, None)
-        packet = nonce + encrypted
-        try:
-            if self.conn:
-                self.conn.sendall(packet)
-            else:
-                self.sock.sendall(packet)
-        except Exception as e:
-            self.append_chat(f"Fehler beim Senden: {e}")
+        msg = self.entry.get()
+        if msg and self.sock:
+            encrypted = cipher.encrypt(msg.encode())
+            self.sock.send(encrypted)
+            self.append_message(msg, "Du")
+            self.entry.delete(0, tk.END)
 
     def receive_messages(self):
-        sock = self.conn if self.conn else self.sock
-        try:
-            while True:
-                packet = sock.recv(1024)
-                if not packet:
-                    self.append_chat("Verbindung getrennt.")
-                    self.update_status("Offline")
+        while True:
+            try:
+                data = self.sock.recv(1024)
+                if not data:
                     break
-                nonce = packet[:12]
-                encrypted = packet[12:]
-                try:
-                    data = self.aesgcm.decrypt(nonce, encrypted, None)
-                    self.process_message(data)
-                except Exception:
-                    self.append_chat("[!] Nachricht konnte nicht entschlüsselt werden")
-        except Exception as e:
-            self.append_chat(f"Verbindungsfehler: {e}")
-            self.update_status("Offline")
-        finally:
-            self.running = False
-            if self.conn:
-                self.conn.close()
-            if self.sock:
-                self.sock.close()
+                decrypted = cipher.decrypt(data).decode()
+                if decrypted == "__SECURE_DELETE__":
+                    self.secure_delete_remote()
+                else:
+                    self.append_message(decrypted, "Partner")
+            except:
+                break
 
-    def process_message(self, data: bytes):
-        msg = data.decode('utf-8')
-        if msg == "__STATUS__ONLINE__":
-            self.update_status("Gegner online")
-        elif msg == "__STATUS__TYPING__":
-            self.status_label.config(text="Status: Gegner schreibt...")
-        elif msg == "__STATUS__NOTYPING__":
-            self.status_label.config(text="Status: Gegner online")
-        else:
-            self.append_chat(f"Partner: {msg}")
+    def secure_delete(self):
+        if self.sock:
+            self.sock.send(cipher.encrypt(b"__SECURE_DELETE__"))
+        self.text_widget.config(state='normal')
+        self.text_widget.delete("1.0", tk.END)
+        self.text_widget.config(state='disabled')
+        self.append_message("🧹 Chatverlauf gelöscht. Stay safe.", "System")
 
-    def append_chat(self, text):
-        self.chat_log.config(state='normal')
-        self.chat_log.insert(tk.END, text + "\n")
-        self.chat_log.config(state='disabled')
-        self.chat_log.see(tk.END)
-
-    def update_status(self, text):
-        self.status_label.config(text=f"Status: {text}")
+    def secure_delete_remote(self):
+        if messagebox.askyesno("Löschen?", "Der Partner fordert das Löschen des Chatverlaufs an. Zustimmen?"):
+            self.text_widget.config(state='normal')
+            self.text_widget.delete("1.0", tk.END)
+            self.text_widget.config(state='disabled')
+            self.append_message("🧹 Partner hat den Chat gelöscht. Stay safe.", "System")
 
 if __name__ == "__main__":
-    app = SecureChat()
-    app.mainloop()
+    root = tk.Tk()
+    app = ChatApp(root)
+    root.mainloop()
